@@ -1,0 +1,250 @@
+/**
+ * Aladiah Academy â€” Unified Brain Orchestrator
+ * Claude (reasoning) + Kimi 2.5 (analytics) + ElevenLabs (voice)
+ * Node.js + Express backend â€” drop into academy-backend/
+ */
+
+import express from "express";
+import Anthropic from "@anthropic-ai/sdk";
+import fetch from "node-fetch";
+import dotenv from "dotenv";
+dotenv.config();
+
+const app = express();
+app.use(express.json());
+
+// â”€â”€â”€ Clients â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+const claude = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+
+// â”€â”€â”€ Agent Personas â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+const AGENTS = {
+  professor: {
+    name: "Professor Didier",
+    voiceId: process.env.ELEVEN_VOICE_PROFESSOR, // set in .env
+    systemPrompt: (lang) => `You are Professor Didier, founder of Aladiah Academy.
+You teach Agile, Scrum, and Project Management at an elite level.
+You are direct, structured, motivational, and deeply practical.
+You give real-world examples. You never give generic advice.
+Always respond in ${lang}. Be human â€” not robotic.`,
+  },
+  career: {
+    name: "Career Advisor",
+    voiceId: process.env.ELEVEN_VOICE_CAREER,
+    systemPrompt: (lang) => `You are a Career Advisor at Aladiah Academy.
+You help students land high-paying remote Agile/PM roles in U.S. companies.
+You know salary negotiation, resume strategy, LinkedIn optimization, and interviews.
+Always respond in ${lang}. Be specific and actionable.`,
+  },
+  interview: {
+    name: "Interview Coach",
+    voiceId: process.env.ELEVEN_VOICE_INTERVIEW,
+    systemPrompt: (lang) => `You are an Interview Coach at Aladiah Academy.
+You run mock interviews, give brutal honest feedback, and train students to ace behavioral and technical PM/Scrum interviews.
+Always respond in ${lang}. Push students to improve.`,
+  },
+  resume: {
+    name: "Resume Builder",
+    voiceId: process.env.ELEVEN_VOICE_RESUME,
+    systemPrompt: (lang) => `You are a Resume Specialist at Aladiah Academy.
+You write ATS-optimized resumes for Scrum Masters and Project Managers targeting U.S. remote jobs.
+Always respond in ${lang}. Be specific â€” use metrics, action verbs, real impact.`,
+  },
+  scrum: {
+    name: "Scrum Expert",
+    voiceId: process.env.ELEVEN_VOICE_SCRUM,
+    systemPrompt: (lang) => `You are a Scrum Expert at Aladiah Academy.
+You teach Scrum framework, ceremonies, sprint planning, backlog grooming, and scaling with SAFe/LeSS.
+Always respond in ${lang}. Give structured, actionable answers.`,
+  },
+};
+
+// â”€â”€â”€ Language Detection â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+function detectLanguage(text) {
+  // Simple heuristic â€” in production, use a library like franc or langdetect API
+  const map = {
+    fr: /\b(je|tu|nous|vous|est|les|des|une|pour|avec|dans|sur|qui|que)\b/i,
+    es: /\b(yo|tÃº|Ã©l|nosotros|es|los|las|una|para|con|en|que|por)\b/i,
+    ar: /[\u0600-\u06FF]/,
+    zh: /[\u4E00-\u9FFF]/,
+    pt: /\b(eu|tu|vocÃª|nÃ³s|Ã©|os|as|uma|para|com|em|que|por)\b/i,
+    de: /\b(ich|du|er|wir|ist|die|der|das|ein|fÃ¼r|mit|in|auf|zu)\b/i,
+    ja: /[\u3040-\u30FF]/,
+  };
+  for (const [lang, pattern] of Object.entries(map)) {
+    if (pattern.test(text)) return lang;
+  }
+  return "English";
+}
+
+// â”€â”€â”€ Claude Call â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+async function askClaude({ agentKey, message, language, history = [] }) {
+  const agent = AGENTS[agentKey] || AGENTS.professor;
+  const messages = [
+    ...history,
+    { role: "user", content: message },
+  ];
+
+  const response = await claude.messages.create({
+    model: "claude-sonnet-4-20250514",
+    max_tokens: 1024,
+    system: agent.systemPrompt(language),
+    messages,
+  });
+
+  return {
+    text: response.content[0].text,
+    agent: agent.name,
+    voiceId: agent.voiceId,
+  };
+}
+
+// â”€â”€â”€ Kimi 2.5 Call â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+async function askKimi({ studentId, message, claudeResponse }) {
+  if (!process.env.KIMI_API_KEY) {
+    // Kimi not configured â€” return mock analytics
+    return {
+      engagementScore: 85,
+      topicTag: "scrum",
+      suggestedFollowUp: null,
+      curriculumNote: null,
+    };
+  }
+
+  const prompt = `You are the analytics brain for Aladiah Academy.
+Given a student message and the AI response, return a JSON object with:
+- engagementScore (0-100): how engaged the student seems
+- topicTag: one word topic label (scrum, career, resume, interview, agile, other)
+- suggestedFollowUp: a short follow-up question to deepen learning (or null)
+- curriculumNote: any curriculum gap you detect (or null)
+
+Student: "${message}"
+AI Response: "${claudeResponse}"
+
+Return ONLY valid JSON. No markdown.`;
+
+  const res = await fetch("https://api.moonshot.cn/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${process.env.KIMI_API_KEY}`,
+    },
+    body: JSON.stringify({
+      model: "moonshot-v1-8k",
+      messages: [{ role: "user", content: prompt }],
+      temperature: 0.3,
+    }),
+  });
+
+  const data = await res.json();
+  try {
+    return JSON.parse(data.choices[0].message.content);
+  } catch {
+    return { engagementScore: 80, topicTag: "general", suggestedFollowUp: null, curriculumNote: null };
+  }
+}
+
+// â”€â”€â”€ ElevenLabs TTS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+async function generateVoice({ text, voiceId }) {
+  if (!process.env.ELEVEN_API_KEY || !voiceId) return null;
+
+  const res = await fetch(
+    `https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`,
+    {
+      method: "POST",
+      headers: {
+        "xi-api-key": process.env.ELEVEN_API_KEY,
+        "Content-Type": "application/json",
+        Accept: "audio/mpeg",
+      },
+      body: JSON.stringify({
+        text,
+        model_id: "eleven_multilingual_v2", // supports 9+ languages
+        voice_settings: { stability: 0.5, similarity_boost: 0.8 },
+      }),
+    }
+  );
+
+  if (!res.ok) return null;
+
+  const buffer = await res.arrayBuffer();
+  return Buffer.from(buffer).toString("base64"); // send as base64 to frontend
+}
+
+// â”€â”€â”€ Main Route: POST /ai â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+app.post("/ai", async (req, res) => {
+  const {
+    message,
+    agentKey = "professor",
+    language: providedLang,
+    history = [],
+    studentId = "anonymous",
+    voice = false, // set true from portal to get audio back
+  } = req.body;
+
+  if (!message) return res.status(400).json({ error: "message is required" });
+
+  const language = providedLang || detectLanguage(message);
+
+  try {
+    // Step 1: Claude generates the response
+    const claudeResult = await askClaude({ agentKey, message, language, history });
+
+    // Step 2: Kimi analyzes the exchange (non-blocking)
+    const [kimiAnalytics, audioBase64] = await Promise.all([
+      askKimi({ studentId, message, claudeResponse: claudeResult.text }),
+      voice ? generateVoice({ text: claudeResult.text, voiceId: claudeResult.voiceId }) : Promise.resolve(null),
+    ]);
+
+    return res.json({
+      response: claudeResult.text,
+      agent: claudeResult.agent,
+      language,
+      analytics: kimiAnalytics,
+      audio: audioBase64, // null if voice=false or ElevenLabs not configured
+    });
+  } catch (err) {
+    console.error("Orchestrator error:", err);
+    return res.status(500).json({ error: "Brain error â€” check server logs" });
+  }
+});
+
+// â”€â”€â”€ Founder Welcome Route: POST /welcome â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+app.post("/welcome", async (req, res) => {
+  const { studentName, language = "English" } = req.body;
+
+  const prompt = `Write a SHORT, personal, motivational welcome message (3-4 sentences max) 
+to ${studentName} joining Aladiah Academy. 
+Speak as Professor Didier â€” the founder. 
+Tell them this is where careers are built, not just learned. 
+Make it feel like a personal message, not a template.
+Respond in ${language}.`;
+
+  try {
+    const response = await claude.messages.create({
+      model: "claude-sonnet-4-20250514",
+      max_tokens: 300,
+      system: AGENTS.professor.systemPrompt(language),
+      messages: [{ role: "user", content: prompt }],
+    });
+
+    const text = response.content[0].text;
+    const audio = await generateVoice({ text, voiceId: AGENTS.professor.voiceId });
+
+    return res.json({ welcome: text, audio });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// â”€â”€â”€ Health Check â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+app.get("/health", (_, res) =>
+  res.json({
+    status: "online",
+    claude: !!process.env.ANTHROPIC_API_KEY,
+    kimi: !!process.env.KIMI_API_KEY,
+    elevenlabs: !!process.env.ELEVEN_API_KEY,
+  })
+);
+
+const PORT = process.env.PORT || 3001;
+app.listen(PORT, () => console.log(`ðŸ§  Aladiah Brain running on :${PORT}`));
