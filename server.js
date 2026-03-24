@@ -232,4 +232,5 @@ app.get("/health", (_, res) => res.json({
 }));
 
 const PORT = process.env.PORT || 3001;
+console.log("Starting on PORT:", PORT);
 app.listen(PORT, () => console.log("🧠 Aladiah Brain running on :" + PORT + " with " + Object.keys(PROFESSORS).length + " professors"));
