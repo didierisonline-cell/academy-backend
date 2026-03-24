@@ -2,13 +2,33 @@ import express from "express";
 import Anthropic from "@anthropic-ai/sdk";
 import fetch from "node-fetch";
 import dotenv from "dotenv";
+import { Resend } from "resend";
 dotenv.config();
+
+const resend = new Resend(process.env.RESEND_API_KEY);
 
 const app = express();
 app.use(express.json());
 
 import cors from "cors";
-app.use(cors());
+import rateLimit from "express-rate-limit";
+
+app.use(cors({
+  origin: [
+    "http://localhost:5173",
+    "http://localhost:3000",
+    "https://aladiahacademy.com",
+    "https://www.aladiahacademy.com"
+  ],
+  methods: ["POST", "GET"],
+  credentials: true
+}));
+
+const aiLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 30,
+  message: { error: "Too many requests. Please slow down." }
+});
 
 const claude = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
@@ -72,7 +92,7 @@ const PROFESSORS = {
   },
 };
 
-app.post("/ai", async (req, res) => {
+app.post("/ai", aiLimiter, async (req, res) => {
   const { message, agentKey = "professor", professorId, language = "English", history = [] } = req.body;
   if (!message) return res.status(400).json({ error: "message is required" });
 
@@ -103,6 +123,103 @@ app.post("/welcome", async (req, res) => {
       messages: [{ role: "user", content: `Write a short personal welcome message to ${studentName} joining Aladiah Academy. Speak as ${agent.name}. 3-4 sentences max. Respond in ${language}.` }],
     });
     return res.json({ welcome: response.content[0].text });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/send-welcome", async (req, res) => {
+  const { email, name, language = "English", professorId } = req.body;
+  if (!email || !name) return res.status(400).json({ error: "email and name are required" });
+  const agent = PROFESSORS[professorId] || PROFESSORS.professor;
+  try {
+    await resend.emails.send({
+      from: "Aladiah Academy <welcome@aladiahacademy.com>",
+      to: email,
+      subject: `Welcome to Aladiah Academy, ${name}!`,
+      html: `
+        <!DOCTYPE html>
+        <html>
+        <body style="margin:0;padding:0;background:#0a1628;font-family:sans-serif;">
+          <div style="max-width:600px;margin:40px auto;background:#0d1f3c;border-radius:16px;overflow:hidden;border:1px solid rgba(59,130,246,0.2);">
+            <div style="background:linear-gradient(135deg,#1e3a8a,#1d4ed8);padding:40px 40px 30px;text-align:center;">
+              <h1 style="color:#fff;font-size:28px;margin:0 0 8px;">Welcome to Aladiah Academy</h1>
+              <p style="color:rgba(255,255,255,0.8);font-size:16px;margin:0;">Your journey to Scrum mastery starts now</p>
+            </div>
+            <div style="padding:36px 40px;">
+              <p style="color:#e2e8f0;font-size:16px;line-height:1.7;margin:0 0 20px;">
+                Hi <strong>${name}</strong>,
+              </p>
+              <p style="color:#94a3b8;font-size:15px;line-height:1.7;margin:0 0 20px;">
+                You're now part of an elite global community of Scrum Masters and Project Managers. Your AI professor <strong style="color:#60a5fa;">${agent.name}</strong> is ready to guide you in <strong>${language}</strong>.
+              </p>
+              <div style="background:rgba(59,130,246,0.1);border:1px solid rgba(59,130,246,0.2);border-radius:12px;padding:20px;margin:24px 0;">
+                <p style="color:#93c5fd;font-size:14px;margin:0 0 12px;font-weight:600;">Your next steps:</p>
+                <p style="color:#94a3b8;font-size:14px;margin:0 0 8px;">1. Complete your first lesson in the Professional Scrum Master course</p>
+                <p style="color:#94a3b8;font-size:14px;margin:0 0 8px;">2. Chat with your AI professor to personalize your learning path</p>
+                <p style="color:#94a3b8;font-size:14px;margin:0;">3. Join the community and connect with fellow learners</p>
+              </div>
+              <div style="text-align:center;margin:32px 0;">
+                <a href="https://aladiahacademy.com/portal"
+                   style="display:inline-block;background:linear-gradient(135deg,#1d4ed8,#3b82f6);color:#fff;text-decoration:none;padding:14px 36px;border-radius:10px;font-size:16px;font-weight:700;">
+                  Enter Your Portal
+                </a>
+              </div>
+            </div>
+            <div style="border-top:1px solid rgba(59,130,246,0.15);padding:20px 40px;text-align:center;">
+              <p style="color:#475569;font-size:12px;margin:0;">Aladiah Academy · Empowering Global Agile Leaders</p>
+            </div>
+          </div>
+        </body>
+        </html>
+      `
+    });
+    return res.json({ sent: true, to: email });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/send-enrollment", async (req, res) => {
+  const { email, name, courseName } = req.body;
+  if (!email || !name) return res.status(400).json({ error: "email and name are required" });
+  try {
+    await resend.emails.send({
+      from: "Aladiah Academy <courses@aladiahacademy.com>",
+      to: email,
+      subject: `You're enrolled: ${courseName || "Aladiah Academy"}`,
+      html: `
+        <!DOCTYPE html>
+        <html>
+        <body style="margin:0;padding:0;background:#0a1628;font-family:sans-serif;">
+          <div style="max-width:600px;margin:40px auto;background:#0d1f3c;border-radius:16px;overflow:hidden;border:1px solid rgba(59,130,246,0.2);">
+            <div style="background:linear-gradient(135deg,#065f46,#059669);padding:40px;text-align:center;">
+              <h1 style="color:#fff;font-size:26px;margin:0 0 8px;">Enrollment Confirmed</h1>
+              <p style="color:rgba(255,255,255,0.85);font-size:15px;margin:0;">${courseName || "Your course"}</p>
+            </div>
+            <div style="padding:36px 40px;">
+              <p style="color:#e2e8f0;font-size:16px;line-height:1.7;margin:0 0 20px;">
+                Hi <strong>${name}</strong>, you're officially enrolled!
+              </p>
+              <p style="color:#94a3b8;font-size:15px;line-height:1.7;margin:0 0 24px;">
+                Head to your portal to start learning right away.
+              </p>
+              <div style="text-align:center;">
+                <a href="https://aladiahacademy.com/courses"
+                   style="display:inline-block;background:linear-gradient(135deg,#065f46,#059669);color:#fff;text-decoration:none;padding:14px 36px;border-radius:10px;font-size:16px;font-weight:700;">
+                  Start Learning
+                </a>
+              </div>
+            </div>
+            <div style="border-top:1px solid rgba(59,130,246,0.15);padding:20px 40px;text-align:center;">
+              <p style="color:#475569;font-size:12px;margin:0;">Aladiah Academy · Empowering Global Agile Leaders</p>
+            </div>
+          </div>
+        </body>
+        </html>
+      `
+    });
+    return res.json({ sent: true, to: email });
   } catch (err) {
     return res.status(500).json({ error: err.message });
   }
