@@ -233,4 +233,76 @@ app.get("/health", (_, res) => res.json({
 
 const PORT = process.env.PORT || 3001;
 console.log("Starting on PORT:", PORT);
+
+// ─── Stripe Checkout ────────────────────────────────────────────────
+import Stripe from 'stripe';
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
+
+app.post('/create-checkout-session', async (req, res) => {
+  try {
+    const { priceId, userId, email } = req.body;
+    if (!priceId || !userId || !email) return res.status(400).json({ error: 'Missing fields' });
+
+    const session = await stripe.checkout.sessions.create({
+      mode: 'subscription',
+      payment_method_types: ['card'],
+      customer_email: email,
+      line_items: [{ price: priceId, quantity: 1 }],
+      success_url: `${process.env.FRONTEND_URL || 'https://www.aladiahacademy.com'}/portal?payment=success&session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url: `${process.env.FRONTEND_URL || 'https://www.aladiahacademy.com'}/enroll?cancelled=true`,
+      metadata: { userId, email },
+      subscription_data: { metadata: { userId, email } },
+    });
+
+    res.json({ url: session.url });
+  } catch (err) {
+    console.error('Stripe error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/stripe-webhook', express.raw({ type: 'application/json' }), async (req, res) => {
+  const sig = req.headers['stripe-signature'];
+  let event;
+  try {
+    event = stripe.webhooks.constructEvent(req.body, sig, process.env.STRIPE_WEBHOOK_SECRET);
+  } catch (err) {
+    return res.status(400).send(`Webhook Error: ${err.message}`);
+  }
+
+  if (event.type === 'checkout.session.completed' || event.type === 'invoice.paid') {
+    const obj = event.data.object;
+    const userId = obj.metadata?.userId || obj.subscription_details?.metadata?.userId;
+    const customerId = obj.customer;
+    const subscriptionId = obj.subscription || obj.id;
+    
+    if (userId) {
+      // Store subscription in Supabase via admin
+      const { createClient } = await import('@supabase/supabase-js');
+      const supaAdmin = createClient(
+        process.env.SUPABASE_URL,
+        process.env.SUPABASE_SERVICE_KEY
+      );
+      await supaAdmin.from('subscriptions').upsert({
+        user_id: userId,
+        stripe_customer_id: customerId,
+        stripe_subscription_id: subscriptionId,
+        status: 'active',
+        updated_at: new Date().toISOString(),
+      }, { onConflict: 'user_id' });
+    }
+  }
+
+  if (event.type === 'customer.subscription.deleted') {
+    const sub = event.data.object;
+    const { createClient } = await import('@supabase/supabase-js');
+    const supaAdmin = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY);
+    await supaAdmin.from('subscriptions')
+      .update({ status: 'cancelled', updated_at: new Date().toISOString() })
+      .eq('stripe_subscription_id', sub.id);
+  }
+
+  res.json({ received: true });
+});
+
 app.listen(PORT, () => console.log("🧠 Aladiah Brain running on :" + PORT + " with " + Object.keys(PROFESSORS).length + " professors"));
